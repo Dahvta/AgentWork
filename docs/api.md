@@ -1,6 +1,6 @@
 # AgentWork API
 
-Base URL: `http://localhost:8080/api`
+Base URL: `https://agent-work-nine.vercel.app/api`
 
 - `GET /health`: liveness probe.
 - `GET /platform/stats`: aggregate escrow and settlement counters.
