@@ -1,0 +1,166 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobState {
+  CREATED
+  FUNDED
+  ASSIGNED
+  SUBMITTED
+  VALIDATING
+  COMPLETED
+  DISPUTED
+  CANCELLED
+}
+
+enum SettlementState {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+model Agent {
+  id                    String   @id @default(cuid())
+  wallet                String   @unique
+  metadataUri           String
+  capabilitiesRoot      String
+  credentialsRoot       String
+  isValidator           Boolean  @default(false)
+  reputationScoreBps    Int      @default(5000)
+  completedJobs         Int      @default(0)
+  failedJobs            Int      @default(0)
+  validations           Int      @default(0)
+  validationFailures    Int      @default(0)
+  totalEarned           Decimal  @default(0) @db.Decimal(36, 0)
+  totalPaid             Decimal  @default(0) @db.Decimal(36, 0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  assignedJobs          Job[]    @relation("AssignedAgent")
+  validationJobs        Job[]    @relation("ValidatorAgent")
+  reputationHistory     ReputationHistory[]
+}
+
+model Employer {
+  id                 String   @id @default(cuid())
+  wallet             String   @unique
+  reputationScoreBps Int      @default(5000)
+  totalPaid          Decimal  @default(0) @db.Decimal(36, 0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  jobs               Job[]
+}
+
+model Job {
+  id                 String          @id
+  contractJobId      BigInt          @unique
+  employerWallet     String
+  employer           Employer        @relation(fields: [employerWallet], references: [wallet])
+  agentWallet        String?
+  agent              Agent?          @relation("AssignedAgent", fields: [agentWallet], references: [wallet])
+  validatorWallet    String?
+  validator          Agent?          @relation("ValidatorAgent", fields: [validatorWallet], references: [wallet])
+  title              String?
+  metadataUri        String
+  rewardAmount       Decimal         @db.Decimal(36, 0)
+  escrowBalance      Decimal         @default(0) @db.Decimal(36, 0)
+  protocolFeeBps     Int             @default(250)
+  validatorRewardBps Int             @default(500)
+  deadline           DateTime
+  state              JobState        @default(CREATED)
+  deliverableHash    String?
+  validationResult   Boolean?
+  blockNumber        BigInt?
+  txHash             String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  deliverables       Deliverable[]
+  validations        Validation[]
+  settlements        Settlement[]
+  escrowTransactions EscrowTransaction[]
+  workflowEvents     WorkflowEvent[]
+}
+
+model Deliverable {
+  id              String   @id @default(cuid())
+  jobId           String
+  job             Job      @relation(fields: [jobId], references: [id])
+  submittedBy     String
+  contentHash     String
+  storageUri      String
+  mimeType        String?
+  bytes           Int?
+  createdAt       DateTime @default(now())
+}
+
+model Validation {
+  id              String   @id @default(cuid())
+  jobId           String
+  job             Job      @relation(fields: [jobId], references: [id])
+  validatorWallet String
+  passed          Boolean
+  confidenceBps   Int
+  evidenceHash    String
+  auditUri        String?
+  createdAt       DateTime @default(now())
+}
+
+model Settlement {
+  id              String          @id @default(cuid())
+  jobId           String
+  job             Job             @relation(fields: [jobId], references: [id])
+  idempotencyKey  String          @unique
+  state           SettlementState @default(PENDING)
+  agentAmount     Decimal         @default(0) @db.Decimal(36, 0)
+  validatorAmount Decimal         @default(0) @db.Decimal(36, 0)
+  protocolFee     Decimal         @default(0) @db.Decimal(36, 0)
+  txHash          String?
+  attempts        Int             @default(0)
+  lastError       String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model ReputationHistory {
+  id          String   @id @default(cuid())
+  agentWallet String
+  agent       Agent    @relation(fields: [agentWallet], references: [wallet])
+  scoreBps    Int
+  reason      String
+  txHash      String?
+  blockNumber BigInt?
+  createdAt   DateTime @default(now())
+}
+
+model WorkflowEvent {
+  id          String   @id @default(cuid())
+  jobId       String?
+  job         Job?     @relation(fields: [jobId], references: [id])
+  type        String
+  payload     Json
+  txHash      String?
+  logIndex    Int?
+  blockNumber BigInt?
+  createdAt   DateTime @default(now())
+
+  @@unique([txHash, logIndex])
+  @@index([type, createdAt])
+}
+
+model EscrowTransaction {
+  id          String   @id @default(cuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id])
+  type        String
+  amount      Decimal  @db.Decimal(36, 0)
+  actor       String
+  txHash      String?
+  blockNumber BigInt?
+  createdAt   DateTime @default(now())
+}
+

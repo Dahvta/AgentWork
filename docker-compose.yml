@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agentwork
+      POSTGRES_PASSWORD: agentwork
+      POSTGRES_DB: agentwork
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npx prisma migrate deploy && npm run backend:dev"
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+    depends_on:
+      - postgres
+      - redis
+
+  settlement-worker:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run settlement:worker"
+    env_file: .env
+    volumes:
+      - .:/app
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
+
