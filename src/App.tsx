@@ -17,18 +17,22 @@ import {
   CheckCircle2,
   FileText,
   ServerCog,
-  ExternalLink
+  ExternalLink,
+  PlayCircle
 } from "lucide-react";
-import { PLATFORM_STATS, MOCK_JOBS, MOCK_AGENTS } from "./data";
-import { loadMarketplace, subscribeMarketplace } from "./lib/agentwork-api";
+import { PLATFORM_STATS, MOCK_JOBS, MOCK_AGENTS, MOCK_ACTIVITY } from "./data";
+import { loadActivity, loadMarketplace, subscribeMarketplace } from "./lib/agentwork-api";
 import { connectWallet, getWalletState, shortAddress, subscribeWallet } from "./lib/wallet";
 import {
   acceptJobOnchain,
   createAndFundJobOnchain,
+  getConnectedUsdcBalance,
   metadataUriForAgent,
   metadataUriForJob,
   registerAgentOnchain,
 } from "./lib/onchain";
+import { explorerTxUrl } from "./lib/protocol";
+import type { ActivityItem } from "./lib/types";
 import architectureDoc from "../docs/architecture.md?raw";
 import apiDoc from "../docs/api.md?raw";
 
@@ -57,6 +61,7 @@ import {
 const LOCAL_BOUNTIES_KEY = "agentwork.localBounties";
 const LOCAL_AGENTS_KEY = "agentwork.localAgents";
 const LOCAL_PROPOSALS_KEY = "agentwork.localProposals";
+const DEMO_MODE_KEY = "agentwork.demoMode";
 type Job = (typeof MOCK_JOBS)[number];
 type Agent = (typeof MOCK_AGENTS)[number];
 type Proposal = {
@@ -226,20 +231,33 @@ function shortHash(hash: string) {
   return `${hash.slice(0, 10)}...${hash.slice(-6)}`;
 }
 
+function relativeEventTime(date: string) {
+  const diffMs = Date.now() - new Date(date).getTime();
+  const minutes = Math.max(1, Math.floor(diffMs / 60_000));
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 export default function App() {
   const [activeView, setActiveView] = useState("marketplace");
   const [activeTab, setActiveTab] = useState("jobs");
+  const [demoMode, setDemoMode] = useState(() => window.localStorage.getItem(DEMO_MODE_KEY) !== "false");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [localBounties, setLocalBounties] = useState<Job[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [localAgents, setLocalAgents] = useState<Agent[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [stats, setStats] = useState(PLATFORM_STATS);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [isLive, setIsLive] = useState(false);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletError, setWalletError] = useState<string | null>(null);
+  const [walletUsdcBalance, setWalletUsdcBalance] = useState<string | null>(null);
   const [isConnectingWallet, setIsConnectingWallet] = useState(false);
   const [chainStatus, setChainStatus] = useState<string | null>(null);
+  const [chainStatusTx, setChainStatusTx] = useState<string | null>(null);
   const [isPostBountyOpen, setIsPostBountyOpen] = useState(false);
   const [isDeployAgentOpen, setIsDeployAgentOpen] = useState(false);
   const [isProposalFormOpen, setIsProposalFormOpen] = useState(false);
@@ -250,13 +268,17 @@ export default function App() {
   const [activeNodeDetails, setActiveNodeDetails] = useState<Agent | null>(null);
   const [bountyForm, setBountyForm] = useState({
     title: "",
+    description: "",
     bounty: "",
     tags: "",
+    skills: "",
     deadlineDays: "7",
   });
   const [agentForm, setAgentForm] = useState({
     name: "",
+    description: "",
     specialty: "",
+    skills: "",
     status: "Active",
   });
   const [proposalForm, setProposalForm] = useState({
@@ -268,14 +290,19 @@ export default function App() {
 
   useEffect(() => {
     let mounted = true;
+    const savedBounties = loadLocalBounties();
+    const savedAgents = loadLocalAgents();
     const savedProposals = loadLocalProposals();
+    setLocalBounties(savedBounties);
+    setLocalAgents(savedAgents);
     setProposals(savedProposals);
     const refresh = () => {
-      loadMarketplace().then((marketplace) => {
+      Promise.all([loadMarketplace(), loadActivity()]).then(([marketplace, nextActivity]) => {
         if (!mounted) return;
         setJobs(marketplace.jobs);
         setAgents(marketplace.agents);
         setStats(marketplace.stats);
+        setActivity(nextActivity);
         setIsLive(marketplace.live);
       });
     };
@@ -288,12 +315,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    window.localStorage.setItem(DEMO_MODE_KEY, String(demoMode));
+  }, [demoMode]);
+
+  useEffect(() => {
     let mounted = true;
     const syncWallet = () => {
       getWalletState().then((state) => {
         if (!mounted) return;
         setWalletAddress(state.address);
         setWalletError(state.error);
+        if (state.address) {
+          getConnectedUsdcBalance(state.address).then((balance) => {
+            if (mounted) setWalletUsdcBalance(balance);
+          }).catch(() => mounted && setWalletUsdcBalance(null));
+        } else {
+          setWalletUsdcBalance(null);
+        }
       });
     };
     syncWallet();
@@ -310,6 +348,7 @@ export default function App() {
     const state = await connectWallet();
     setWalletAddress(state.address);
     setWalletError(state.error);
+    setWalletUsdcBalance(state.address ? await getConnectedUsdcBalance(state.address).catch(() => null) : null);
     setIsConnectingWallet(false);
   };
 
@@ -338,7 +377,7 @@ export default function App() {
       receipt = await createAndFundJobOnchain({
         rewardAmount: bounty,
         deadlineDays: Number(bountyForm.deadlineDays) || 7,
-        metadataURI: metadataUriForJob(title, parsedTags),
+        metadataURI: metadataUriForJob(title, parsedTags, bountyForm.description.trim(), bountyForm.skills.trim()),
       });
     } catch (error) {
       setChainStatus(errorMessage(error));
@@ -355,12 +394,17 @@ export default function App() {
       timePosted: "just now",
       matchScore: 91,
     };
-    setLocalBounties((current) => [newJob, ...current]);
+    setLocalBounties((current) => {
+      const next = [newJob, ...current];
+      saveLocalBounties(next);
+      return next;
+    });
     setJobs((currentJobs) => mergeJobs([newJob], currentJobs));
-    setBountyForm({ title: "", bounty: "", tags: "", deadlineDays: "7" });
+    setBountyForm({ title: "", description: "", bounty: "", tags: "", skills: "", deadlineDays: "7" });
     setActiveView("marketplace");
     setActiveTab("jobs");
     setChainStatus(`Bounty funded onchain: ${shortHash(receipt.hash)}`);
+    setChainStatusTx(receipt.hash);
     setIsPostBountyOpen(false);
   };
 
@@ -381,7 +425,7 @@ export default function App() {
     setChainStatus("Confirm agent registration in your wallet.");
     let receipt;
     try {
-      receipt = await registerAgentOnchain(metadataUriForAgent(name, specialty, agentForm.status));
+      receipt = await registerAgentOnchain(metadataUriForAgent(name, specialty, agentForm.status, agentForm.description.trim(), agentForm.skills.trim()));
     } catch (error) {
       setChainStatus(errorMessage(error));
       return;
@@ -396,12 +440,17 @@ export default function App() {
       status: agentForm.status,
       avatarUrl: `https://api.dicebear.com/9.x/shapes/svg?seed=${encodeURIComponent(name)}`,
     };
-    setLocalAgents((current) => [newAgent, ...current]);
+    setLocalAgents((current) => {
+      const next = [newAgent, ...current];
+      saveLocalAgents(next);
+      return next;
+    });
     setAgents((currentAgents) => mergeAgents([newAgent], currentAgents));
-    setAgentForm({ name: "", specialty: "", status: "Active" });
+    setAgentForm({ name: "", description: "", specialty: "", skills: "", status: "Active" });
     setActiveView("marketplace");
     setActiveTab("agents");
     setChainStatus(`Agent registered onchain: ${shortHash(receipt.hash)}`);
+    setChainStatusTx(receipt.hash);
     setIsDeployAgentOpen(false);
   };
 
@@ -468,6 +517,7 @@ export default function App() {
     setProposalForm({ agentName: "", summary: "", timeline: "", validator: "" });
     setProposalStatus(`Proposal submitted onchain: ${shortHash(receipt.hash)}`);
     setChainStatus(`Proposal accepted onchain: ${shortHash(receipt.hash)}`);
+    setChainStatusTx(receipt.hash);
     setIsSubmittingProposal(false);
     setIsProposalFormOpen(false);
   };
@@ -477,8 +527,12 @@ export default function App() {
       activeView === view ? "text-white bg-white/5" : "hover:text-white hover:bg-white/5"
     }`;
 
-  const openJobsCount = jobs.filter((job) => job.status.toLowerCase() === "open").length;
-  const activeAgentsCount = agents.filter((agent) => agent.status.toLowerCase() === "active").length;
+  const visibleJobs = demoMode ? mergeJobs(localBounties, jobs.length ? jobs : MOCK_JOBS) : mergeJobs(localBounties, jobs);
+  const visibleAgents = demoMode ? mergeAgents(localAgents, agents.length ? agents : MOCK_AGENTS) : mergeAgents(localAgents, agents);
+  const visibleStats = demoMode && jobs.length === 0 && agents.length === 0 ? PLATFORM_STATS : stats;
+  const visibleActivity = demoMode && activity.length === 0 ? MOCK_ACTIVITY : activity;
+  const openJobsCount = visibleJobs.filter((job) => job.status.toLowerCase() === "open").length;
+  const activeAgentsCount = visibleAgents.filter((agent) => agent.status.toLowerCase() === "active").length;
   const connectedNetworkLabel = walletAddress ? "Arc Testnet ready" : "Wallet disconnected";
   const activeJobProposals = activeJobDetails
     ? proposals.filter((proposal) => proposal.jobId === activeJobDetails.id)
@@ -517,11 +571,30 @@ export default function App() {
                 />
               </label>
               <label className="block">
+                <span className="mb-2 block text-sm font-medium text-muted-foreground">Description</span>
+                <textarea
+                  value={bountyForm.description}
+                  onChange={(event) => setBountyForm((form) => ({ ...form, description: event.target.value }))}
+                  placeholder="Explain the expected deliverable, validation criteria, and acceptance conditions."
+                  rows={4}
+                  className="w-full resize-none rounded-lg border border-border/50 bg-background/60 px-3 py-2 text-sm text-white outline-none focus:border-primary/60"
+                />
+              </label>
+              <label className="block">
                 <span className="mb-2 block text-sm font-medium text-muted-foreground">Tags</span>
                 <input
                   value={bountyForm.tags}
                   onChange={(event) => setBountyForm((form) => ({ ...form, tags: event.target.value }))}
                   placeholder="Solidity, Validation, Arc"
+                  className="w-full rounded-lg border border-border/50 bg-background/60 px-3 py-2 text-sm text-white outline-none focus:border-primary/60"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-muted-foreground">Required Skills</span>
+                <input
+                  value={bountyForm.skills}
+                  onChange={(event) => setBountyForm((form) => ({ ...form, skills: event.target.value }))}
+                  placeholder="Python, ERC-20, circuit simulation"
                   className="w-full rounded-lg border border-border/50 bg-background/60 px-3 py-2 text-sm text-white outline-none focus:border-primary/60"
                 />
               </label>
@@ -589,6 +662,25 @@ export default function App() {
                   onChange={(event) => setAgentForm((form) => ({ ...form, specialty: event.target.value }))}
                   placeholder="Smart Contract Auditing"
                   required
+                  className="w-full rounded-lg border border-border/50 bg-background/60 px-3 py-2 text-sm text-white outline-none focus:border-primary/60"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-muted-foreground">Description</span>
+                <textarea
+                  value={agentForm.description}
+                  onChange={(event) => setAgentForm((form) => ({ ...form, description: event.target.value }))}
+                  placeholder="Describe what this agent can do and how it should be evaluated."
+                  rows={4}
+                  className="w-full resize-none rounded-lg border border-border/50 bg-background/60 px-3 py-2 text-sm text-white outline-none focus:border-primary/60"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-muted-foreground">Capabilities / Skills</span>
+                <input
+                  value={agentForm.skills}
+                  onChange={(event) => setAgentForm((form) => ({ ...form, skills: event.target.value }))}
+                  placeholder="Solidity auditing, PCB review, market reasoning"
                   className="w-full rounded-lg border border-border/50 bg-background/60 px-3 py-2 text-sm text-white outline-none focus:border-primary/60"
                 />
               </label>
@@ -704,7 +796,7 @@ export default function App() {
                       <input
                         value={proposalForm.agentName}
                         onChange={(event) => setProposalForm((form) => ({ ...form, agentName: event.target.value }))}
-                        placeholder={agents[0]?.name ?? "Your agent"}
+                        placeholder={visibleAgents[0]?.name ?? "Your agent"}
                         required
                         className="w-full rounded-lg border border-border/50 bg-background/60 px-3 py-2 text-sm text-white outline-none focus:border-primary/60"
                       />
@@ -956,6 +1048,15 @@ export default function App() {
               />
             </div>
             <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setDemoMode((enabled) => !enabled)}
+              className={`hidden rounded-full border-border/50 bg-transparent hover:bg-white/5 sm:inline-flex ${demoMode ? "text-primary" : "text-muted-foreground hover:text-white"}`}
+            >
+              <PlayCircle className="h-3.5 w-3.5 mr-1.5" /> Demo
+            </Button>
+            <Button
               variant="outline"
               size="sm"
               type="button"
@@ -966,6 +1067,11 @@ export default function App() {
             >
               {isConnectingWallet ? "Connecting..." : walletAddress ? shortAddress(walletAddress) : "Connect Wallet"}
             </Button>
+            {walletAddress && walletUsdcBalance && (
+              <span className="hidden rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 font-mono text-xs text-primary lg:inline-flex">
+                {walletUsdcBalance}
+              </span>
+            )}
             {walletError && (
               <span className="hidden lg:inline max-w-52 truncate text-xs text-amber-300" title={walletError}>
                 {walletError}
@@ -984,9 +1090,24 @@ export default function App() {
         {chainStatus && (
           <div className="mb-6 flex items-center justify-between gap-4 rounded-lg border border-primary/20 bg-primary/10 px-4 py-3 text-sm text-primary">
             <span>{chainStatus}</span>
-            <button type="button" onClick={() => setChainStatus(null)} className="text-primary/70 hover:text-primary">
+            <div className="flex items-center gap-3">
+              {chainStatusTx && (
+                <a href={explorerTxUrl(chainStatusTx)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-white hover:text-primary">
+                  View tx <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              )}
+              <button type="button" onClick={() => { setChainStatus(null); setChainStatusTx(null); }} className="text-primary/70 hover:text-primary">
               Dismiss
-            </button>
+              </button>
+            </div>
+          </div>
+        )}
+        {demoMode && (
+          <div className="mb-6 flex flex-col gap-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100 sm:flex-row sm:items-center sm:justify-between">
+            <span><strong>Demo Mode</strong> - sample jobs and agents are enabled. Connect a wallet to interact with Arc Testnet.</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => setDemoMode(false)} className="rounded-full bg-transparent border-amber-300/40 text-amber-100 hover:bg-amber-400/10">
+              Use live only
+            </Button>
           </div>
         )}
         {activeView === "dashboard" && (
@@ -1021,7 +1142,7 @@ export default function App() {
             </div>
 
             <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {stats.map((stat, idx) => (
+              {visibleStats.map((stat, idx) => (
                 <Card key={stat.label} className="bg-card/40 border-border/40 backdrop-blur-md">
                   <CardContent className="p-6">
                     <p className="text-sm font-medium text-muted-foreground mb-2 flex justify-between items-center">
@@ -1049,7 +1170,7 @@ export default function App() {
                     <Badge className="bg-primary/10 text-primary border-primary/20">{openJobsCount} open</Badge>
                   </div>
                   <div className="space-y-3">
-                    {jobs.slice(0, 3).map((job) => (
+                    {visibleJobs.slice(0, 3).map((job) => (
                       <button
                         key={job.id}
                         type="button"
@@ -1154,7 +1275,7 @@ export default function App() {
 
             {/* Stats Row */}
             <section className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10">
-              {stats.map((stat, idx) => (
+              {visibleStats.map((stat, idx) => (
                 <motion.div
                   key={stat.label}
                   initial={{ opacity: 0, y: 20 }}
@@ -1211,7 +1332,24 @@ export default function App() {
                     transition={{ duration: 0.3 }}
                     className="flex flex-col gap-3"
                   >
-                    {jobs.map((job) => (
+                    {visibleJobs.length === 0 && (
+                      <div className="rounded-lg border border-dashed border-border/50 bg-white/[0.03] p-8 text-center">
+                        <Layers className="mx-auto mb-3 h-8 w-8 text-primary/50" />
+                        <h3 className="mb-2 text-lg font-medium text-white">No onchain jobs yet</h3>
+                        <p className="mx-auto mb-5 max-w-md text-sm text-muted-foreground">
+                          Create the first Arc-funded task, or enable Demo Mode to rehearse the full presentation flow.
+                        </p>
+                        <div className="flex justify-center gap-2">
+                          <Button type="button" onClick={() => setIsPostBountyOpen(true)} className="rounded-full bg-primary text-primary-foreground">
+                            <Plus className="mr-2 h-4 w-4" /> Post Bounty
+                          </Button>
+                          <Button type="button" variant="outline" onClick={() => setDemoMode(true)} className="rounded-full bg-transparent border-border/50 text-white">
+                            <PlayCircle className="mr-2 h-4 w-4" /> Demo Mode
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                    {visibleJobs.map((job) => (
                       <motion.div
                         key={job.id}
                         whileHover={{ x: 4 }}
@@ -1300,7 +1438,24 @@ export default function App() {
                     transition={{ duration: 0.3 }}
                     className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
                   >
-                    {agents.map((agent, idx) => (
+                    {visibleAgents.length === 0 && (
+                      <div className="col-span-full rounded-lg border border-dashed border-border/50 bg-white/[0.03] p-8 text-center">
+                        <Cpu className="mx-auto mb-3 h-8 w-8 text-primary/50" />
+                        <h3 className="mb-2 text-lg font-medium text-white">No registered agents yet</h3>
+                        <p className="mx-auto mb-5 max-w-md text-sm text-muted-foreground">
+                          Register an agent identity on Arc or enable Demo Mode to show the agent reputation surface.
+                        </p>
+                        <div className="flex justify-center gap-2">
+                          <Button type="button" onClick={() => setIsDeployAgentOpen(true)} className="rounded-full bg-primary text-primary-foreground">
+                            <Terminal className="mr-2 h-4 w-4" /> Deploy Agent
+                          </Button>
+                          <Button type="button" variant="outline" onClick={() => setDemoMode(true)} className="rounded-full bg-transparent border-border/50 text-white">
+                            <PlayCircle className="mr-2 h-4 w-4" /> Demo Mode
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                    {visibleAgents.map((agent, idx) => (
                       <motion.div
                         key={agent.id}
                         whileHover={{ y: -5 }}
@@ -1321,7 +1476,7 @@ export default function App() {
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end" className="bg-card border-border/50 text-white">
-                                <DropdownMenuItem>View Profile</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => openNodeDetails(agent)}>View Profile</DropdownMenuItem>
                                 <DropdownMenuItem>Hire Agent</DropdownMenuItem>
                                 <DropdownMenuItem>Audit Logs</DropdownMenuItem>
                               </DropdownMenuContent>
@@ -1357,7 +1512,7 @@ export default function App() {
                             </div>
                           </div>
 
-                          <Button className="w-full bg-white/5 hover:bg-white/10 text-white border border-border/50 group-hover:border-primary/30 transition-all">
+                          <Button type="button" onClick={() => openNodeDetails(agent)} className="w-full bg-white/5 hover:bg-white/10 text-white border border-border/50 group-hover:border-primary/30 transition-all">
                             View Contracts
                           </Button>
                         </CardContent>
@@ -1368,25 +1523,43 @@ export default function App() {
                 </TabsContent>
               )}
 
-              {/* ACTIVITY TAB (Placeholder) */}
+              {/* ACTIVITY TAB */}
               {activeTab === "activity" && (
-                <TabsContent value="activity" className="m-0 mt-0 h-full flex flex-col items-center justify-center text-center p-12" forceMount>
+                <TabsContent value="activity" className="m-0 mt-0" forceMount>
                   <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 10 }}
                     transition={{ duration: 0.3 }}
+                    className="space-y-3"
                   >
-                    <Activity className="w-12 h-12 text-primary/20 mx-auto mb-4" />
-                    <h3 className="text-lg font-medium text-white mb-2">Live Network Feeds</h3>
-                    <p className="text-muted-foreground font-mono text-sm max-w-sm">
-                      Connecting to Arc Network mempool... Waiting for block finalization.
-                    </p>
-                    <div className="mt-8 flex gap-2 justify-center">
-                      <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce" style={{ animationDelay: "0ms" }} />
-                      <div className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: "150ms" }} />
-                      <div className="w-2 h-2 rounded-full bg-primary animate-bounce" style={{ animationDelay: "300ms" }} />
-                    </div>
+                    {visibleActivity.length === 0 && (
+                      <div className="rounded-lg border border-dashed border-border/50 bg-white/[0.03] p-10 text-center">
+                        <Activity className="w-10 h-10 text-primary/30 mx-auto mb-4" />
+                        <h3 className="text-lg font-medium text-white mb-2">No Arc events indexed yet</h3>
+                        <p className="text-muted-foreground text-sm max-w-md mx-auto">
+                          Once jobs are created, funded, assigned, submitted, validated, or settled, they will appear here with explorer links.
+                        </p>
+                      </div>
+                    )}
+                    {visibleActivity.map((event) => (
+                      <div key={event.id} className="rounded-lg border border-border/40 bg-card/40 p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="mb-1 flex flex-wrap items-center gap-2">
+                              <Badge className="bg-primary/10 text-primary border-primary/20">{event.type}</Badge>
+                              {event.jobId && <span className="font-mono text-xs text-muted-foreground">{event.jobId}</span>}
+                              <span className="font-mono text-xs text-muted-foreground">block {event.blockNumber}</span>
+                            </div>
+                            <p className="text-sm text-white">{event.description}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">{relativeEventTime(event.timestamp)}</p>
+                          </div>
+                          <a href={explorerTxUrl(event.txHash)} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border/50 px-3 py-1.5 text-xs text-white hover:border-primary/40 hover:text-primary">
+                            {shortHash(event.txHash)} <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
+                        </div>
+                      </div>
+                    ))}
                   </motion.div>
                 </TabsContent>
               )}
@@ -1409,7 +1582,7 @@ export default function App() {
               <p className="text-muted-foreground max-w-xl text-lg">Validator and worker node readiness across the AgentWork execution layer.</p>
             </div>
             <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {agents.map((agent) => (
+              {visibleAgents.map((agent) => (
                 <Card
                   key={agent.id}
                   role="button"

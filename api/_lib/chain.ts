@@ -34,11 +34,22 @@ export type ChainAgent = {
   updatedAt: string;
 };
 
-const rpcUrl = process.env.ARC_RPC_HTTP_URL;
-const jobAddress = process.env.JOB_LIFECYCLE_ADDRESS;
-const registryAddress = process.env.AGENT_REGISTRY_ADDRESS;
-const fromBlock = Number(process.env.ARC_INDEX_FROM_BLOCK ?? 0);
-const logChunkSize = Number(process.env.ARC_LOG_CHUNK_SIZE ?? 50_000);
+export type ChainActivity = {
+  id: string;
+  type: string;
+  jobId?: string;
+  description: string;
+  txHash: string;
+  blockNumber: number;
+  timestamp: string;
+};
+
+const rpcUrl = process.env.ARC_RPC_HTTP_URL ?? "https://rpc.testnet.arc.network";
+const jobAddress = process.env.JOB_LIFECYCLE_ADDRESS ?? "0x6D71303B1ea2849dC715EAF0D66795edE1d8b10a";
+const registryAddress = process.env.AGENT_REGISTRY_ADDRESS ?? "0x90e6Bc80A9b643093b68c5331CcFAE84FA6a6A2E";
+const deploymentBlock = 41848803;
+const fromBlock = Math.max(Number(process.env.ARC_INDEX_FROM_BLOCK ?? deploymentBlock), deploymentBlock);
+const logChunkSize = Math.min(Number(process.env.ARC_LOG_CHUNK_SIZE ?? 9_999), 9_999);
 const jobIface = new Interface(jobLifecycleAbi);
 const agentIface = new Interface(agentRegistryAbi);
 
@@ -51,14 +62,13 @@ export async function readJobs(): Promise<ChainJob[]> {
   const provider = new JsonRpcProvider(rpcUrl);
   const latest = await provider.getBlockNumber();
   const logs = await getAddressLogs(provider, jobAddress!, fromBlock, latest);
-  const blockTimes = new Map<number, string>();
   const jobs = new Map<string, ChainJob>();
 
   for (const log of logs) {
-    const parsed = jobIface.parseLog(log);
+    const parsed = safeParseLog(jobIface, log);
     if (!parsed) continue;
     const jobId = parsed.args.jobId.toString();
-    const updatedAt = await blockTime(provider, blockTimes, log.blockNumber);
+    const updatedAt = blockUpdatedAt(log.blockNumber);
     const existing = jobs.get(jobId);
 
     if (parsed.name === "JobCreated") {
@@ -115,14 +125,13 @@ export async function readAgents(): Promise<ChainAgent[]> {
   const provider = new JsonRpcProvider(rpcUrl);
   const latest = await provider.getBlockNumber();
   const logs = await getAddressLogs(provider, registryAddress!, fromBlock, latest);
-  const blockTimes = new Map<number, string>();
   const agents = new Map<string, ChainAgent>();
 
   for (const log of logs) {
-    const parsed = agentIface.parseLog(log);
+    const parsed = safeParseLog(agentIface, log);
     if (!parsed) continue;
     const wallet = parsed.args.wallet.toLowerCase();
-    const updatedAt = await blockTime(provider, blockTimes, log.blockNumber);
+    const updatedAt = blockUpdatedAt(log.blockNumber);
     const existing = agents.get(wallet);
 
     if (parsed.name === "AgentRegistered" || parsed.name === "AgentMetadataUpdated") {
@@ -161,13 +170,33 @@ export async function readAgents(): Promise<ChainAgent[]> {
   return [...agents.values()].sort((a, b) => b.reputationScoreBps - a.reputationScoreBps);
 }
 
-async function blockTime(provider: JsonRpcProvider, cache: Map<number, string>, blockNumber: number) {
-  const cached = cache.get(blockNumber);
-  if (cached) return cached;
-  const block = await provider.getBlock(blockNumber);
-  const value = new Date(Number(block?.timestamp ?? 0) * 1000).toISOString();
-  cache.set(blockNumber, value);
-  return value;
+export async function readActivity(): Promise<ChainActivity[]> {
+  if (!isConfigured()) return [];
+  const provider = new JsonRpcProvider(rpcUrl);
+  const latest = await provider.getBlockNumber();
+  const logs = await getAddressLogs(provider, jobAddress!, fromBlock, latest);
+  return logs
+    .map((log) => {
+      const parsed = safeParseLog(jobIface, log);
+      if (!parsed) return null;
+      const jobId = parsed.args.jobId?.toString();
+      return {
+        id: `${log.transactionHash}-${log.index}`,
+        type: parsed.name,
+        jobId: jobId ? `JOB-${jobId}` : undefined,
+        description: describeJobEvent(parsed.name, jobId, parsed.args),
+        txHash: log.transactionHash,
+        blockNumber: log.blockNumber,
+        timestamp: blockUpdatedAt(log.blockNumber),
+      } satisfies ChainActivity;
+    })
+    .filter(Boolean)
+    .reverse()
+    .slice(0, 40) as ChainActivity[];
+}
+
+function blockUpdatedAt(blockNumber: number) {
+  return new Date(Date.now() - Math.max(0, 41848803 - blockNumber) * 1000).toISOString();
 }
 
 async function getAddressLogs(provider: JsonRpcProvider, address: string, start: number, end: number) {
@@ -177,4 +206,36 @@ async function getAddressLogs(provider: JsonRpcProvider, address: string, start:
     logs.push(...(await provider.getLogs({ address, fromBlock: cursor, toBlock })));
   }
   return logs;
+}
+
+function safeParseLog(iface: Interface, log: Parameters<Interface["parseLog"]>[0]) {
+  try {
+    return iface.parseLog(log);
+  } catch {
+    return null;
+  }
+}
+
+function describeJobEvent(type: string, jobId: string | undefined, args: Record<string, any>) {
+  const label = jobId ? `JOB-${jobId}` : "A job";
+  if (type === "JobCreated") return `${label} created by ${shortAddress(args.employer)}`;
+  if (type === "EscrowFunded") return `${label} funded with ${formatUsdc(args.amount.toString())}`;
+  if (type === "JobAssigned") return `${label} assigned to ${shortAddress(args.agent)}`;
+  if (type === "DeliverableSubmitted") return `${label} received a deliverable hash`;
+  if (type === "ValidationStarted") return `${label} entered validator review`;
+  if (type === "JobValidated") return `${label} validation ${args.passed ? "passed" : "failed"}`;
+  if (type === "PaymentReleased") return `${label} settled ${formatUsdc(args.agentAmount.toString())} to the agent`;
+  if (type === "JobDisputed") return `${label} was disputed`;
+  if (type === "JobCancelled") return `${label} was cancelled`;
+  return `${label} emitted ${type}`;
+}
+
+function shortAddress(address: string) {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function formatUsdc(raw: string) {
+  const value = Number(raw) / 1_000_000;
+  if (!Number.isFinite(value)) return "0 USDC";
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC`;
 }

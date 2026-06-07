@@ -1,26 +1,6 @@
 import { Contract, BrowserProvider, parseUnits, ZeroHash } from "ethers";
 import { ensureArcTestnet, getProvider } from "./wallet";
-
-const AGENT_REGISTRY_ADDRESS =
-  import.meta.env.VITE_AGENT_REGISTRY_ADDRESS ?? "0x90e6Bc80A9b643093b68c5331CcFAE84FA6a6A2E";
-const JOB_LIFECYCLE_ADDRESS =
-  import.meta.env.VITE_JOB_LIFECYCLE_ADDRESS ?? "0x6D71303B1ea2849dC715EAF0D66795edE1d8b10a";
-const USDC_ADDRESS = import.meta.env.VITE_USDC_ADDRESS ?? "0x3600000000000000000000000000000000000000";
-
-const agentRegistryAbi = [
-  "function registerAgent(string metadataURI, bytes32 capabilitiesRoot, bytes32 credentialsRoot)",
-] as const;
-
-const jobLifecycleAbi = [
-  "function createJob(uint256 rewardAmount, uint64 deadline, string metadataURI, uint256 protocolFeeBps, uint256 validatorRewardBps) returns (uint256)",
-  "function fundEscrow(uint256 jobId, uint256 amount)",
-  "function acceptJob(uint256 jobId, address validator)",
-  "event JobCreated(uint256 indexed jobId,address indexed employer,uint256 rewardAmount,uint64 deadline,string metadataURI)",
-] as const;
-
-const erc20Abi = [
-  "function approve(address spender, uint256 amount) returns (bool)",
-] as const;
+import { AGENT_REGISTRY_ADDRESS, JOB_LIFECYCLE_ADDRESS, USDC_ADDRESS, agentRegistryAbi, erc20Abi, jobLifecycleAbi } from "./protocol";
 
 export type ChainReceipt = {
   hash: string;
@@ -32,13 +12,13 @@ export function isOnchainJobId(id: string) {
   return Number.isInteger(numeric) && numeric > 0;
 }
 
-export function metadataUriForAgent(name: string, specialty: string, status: string) {
-  const params = new URLSearchParams({ name, specialty, status });
+export function metadataUriForAgent(name: string, specialty: string, status: string, description = "", skills = "") {
+  const params = new URLSearchParams({ name, specialty, status, description, skills });
   return `agentwork://agent?${params.toString()}`;
 }
 
-export function metadataUriForJob(title: string, tags: string[]) {
-  const params = new URLSearchParams({ title, tags: tags.join(",") });
+export function metadataUriForJob(title: string, tags: string[], description = "", skills = "") {
+  const params = new URLSearchParams({ title, tags: tags.join(","), description, skills });
   return `agentwork://job?${params.toString()}`;
 }
 
@@ -80,6 +60,17 @@ export async function acceptJobOnchain(jobId: string, validator: string): Promis
   const tx = await jobs.acceptJob(numericJobId, validator);
   const receipt = await tx.wait();
   return { hash: receipt.hash };
+}
+
+export async function getConnectedUsdcBalance(address: string) {
+  const injectedProvider = getProvider();
+  if (!injectedProvider) return null;
+  await ensureArcTestnet(injectedProvider);
+  const provider = new BrowserProvider(injectedProvider);
+  const usdc = new Contract(USDC_ADDRESS, erc20Abi, provider);
+  const [balance, decimals] = await Promise.all([usdc.balanceOf(address), usdc.decimals().catch(() => 6)]);
+  const divisor = 10 ** Number(decimals);
+  return `${(Number(balance) / divisor).toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC`;
 }
 
 async function getSigner() {

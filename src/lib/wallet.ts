@@ -1,13 +1,15 @@
+import { ARC_TESTNET_CHAIN_ID, ARC_TESTNET_EXPLORER, ARC_TESTNET_RPC } from "./protocol";
+
 export const ARC_TESTNET = {
-  chainId: "0x4cef52",
+  chainId: ARC_TESTNET_CHAIN_ID,
   chainName: "Arc Testnet",
   nativeCurrency: {
     name: "USDC",
     symbol: "USDC",
     decimals: 18,
   },
-  rpcUrls: ["https://rpc.testnet.arc.network"],
-  blockExplorerUrls: ["https://testnet.arcscan.app"],
+  rpcUrls: [ARC_TESTNET_RPC],
+  blockExplorerUrls: [ARC_TESTNET_EXPLORER],
 };
 
 type EthereumProvider = {
