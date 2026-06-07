@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { JobDetailSheet } from "./components/JobDetailSheet";
+import { AgentProfileSheet } from "./components/AgentProfileSheet";
+import { JobCardSkeleton, AgentCardSkeleton, StatCardSkeleton, ActivityItemSkeleton } from "./components/Skeletons";
 import {
   Search,
   Activity,
@@ -252,6 +255,7 @@ export default function App() {
   const [stats, setStats] = useState(PLATFORM_STATS);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [isLive, setIsLive] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletError, setWalletError] = useState<string | null>(null);
   const [walletUsdcBalance, setWalletUsdcBalance] = useState<string | null>(null);
@@ -304,6 +308,7 @@ export default function App() {
         setStats(marketplace.stats);
         setActivity(nextActivity);
         setIsLive(marketplace.live);
+        setIsLoading(false);
       });
     };
     refresh();
@@ -758,8 +763,28 @@ export default function App() {
         </SheetContent>
       </Sheet>
 
-      <Sheet
+      <JobDetailSheet
+        job={activeJobDetails}
         open={Boolean(activeJobDetails)}
+        onClose={() => { setActiveJobDetails(null); setIsProposalFormOpen(false); }}
+        walletAddress={walletAddress}
+        activity={activity}
+        onAcceptJob={async (jobId) => {
+          setChainStatus("Confirm job acceptance in your wallet.");
+          try {
+            const receipt = await acceptJobOnchain(jobId, walletAddress ?? "0x0000000000000000000000000000000000000000");
+            setChainStatus(`Job accepted onchain: ${receipt.hash.slice(0,10)}...`);
+            setChainStatusTx(receipt.hash);
+          } catch (e: unknown) {
+            setChainStatus(e instanceof Error ? e.message : "Transaction failed");
+          }
+        }}
+        onSubmitProposal={(job) => { setActiveJobDetails(job); setIsProposalFormOpen(true); }}
+      />
+
+      {/* Keep old sheet hidden but functional for proposal form - replace with new agent sheet */}
+      <Sheet
+        open={false}
         onOpenChange={(open) => {
           if (!open) {
             setActiveJobDetails(null);
@@ -931,7 +956,16 @@ export default function App() {
         </SheetContent>
       </Sheet>
 
-      <Sheet open={Boolean(activeNodeDetails)} onOpenChange={(open) => !open && setActiveNodeDetails(null)}>
+      <AgentProfileSheet
+        agent={activeNodeDetails}
+        open={Boolean(activeNodeDetails)}
+        onClose={() => setActiveNodeDetails(null)}
+        activity={activity}
+        onFindJobs={() => { setActiveNodeDetails(null); setActiveView("marketplace"); setActiveTab("jobs"); }}
+      />
+
+      {/* Legacy agent sheet kept hidden */}
+      <Sheet open={Boolean(activeNodeDetails) && false} onOpenChange={(open) => !open && setActiveNodeDetails(null)}>
         <SheetContent className="w-full max-w-xl border-border/50 bg-card text-white sm:max-w-xl">
           <SheetHeader className="border-b border-border/40">
             <SheetTitle className="text-white">{activeNodeDetails?.name}</SheetTitle>
@@ -1332,7 +1366,14 @@ export default function App() {
                     transition={{ duration: 0.3 }}
                     className="flex flex-col gap-3"
                   >
-                    {visibleJobs.length === 0 && (
+                    {isLoading && !demoMode && (
+                      <div className="flex flex-col gap-3">
+                        <JobCardSkeleton />
+                        <JobCardSkeleton />
+                        <JobCardSkeleton />
+                      </div>
+                    )}
+                    {visibleJobs.length === 0 && !isLoading && (
                       <div className="rounded-lg border border-dashed border-border/50 bg-white/[0.03] p-8 text-center">
                         <Layers className="mx-auto mb-3 h-8 w-8 text-primary/50" />
                         <h3 className="mb-2 text-lg font-medium text-white">No onchain jobs yet</h3>
@@ -1438,7 +1479,14 @@ export default function App() {
                     transition={{ duration: 0.3 }}
                     className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
                   >
-                    {visibleAgents.length === 0 && (
+                    {isLoading && !demoMode && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <AgentCardSkeleton />
+                        <AgentCardSkeleton />
+                        <AgentCardSkeleton />
+                      </div>
+                    )}
+                    {visibleAgents.length === 0 && !isLoading && (
                       <div className="col-span-full rounded-lg border border-dashed border-border/50 bg-white/[0.03] p-8 text-center">
                         <Cpu className="mx-auto mb-3 h-8 w-8 text-primary/50" />
                         <h3 className="mb-2 text-lg font-medium text-white">No registered agents yet</h3>
@@ -1533,7 +1581,14 @@ export default function App() {
                     transition={{ duration: 0.3 }}
                     className="space-y-3"
                   >
-                    {visibleActivity.length === 0 && (
+                    {isLoading && !demoMode && (
+                      <div className="space-y-3">
+                        <ActivityItemSkeleton />
+                        <ActivityItemSkeleton />
+                        <ActivityItemSkeleton />
+                      </div>
+                    )}
+                    {visibleActivity.length === 0 && !isLoading && (
                       <div className="rounded-lg border border-dashed border-border/50 bg-white/[0.03] p-10 text-center">
                         <Activity className="w-10 h-10 text-primary/30 mx-auto mb-4" />
                         <h3 className="text-lg font-medium text-white mb-2">No Arc events indexed yet</h3>
