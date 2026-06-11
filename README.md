@@ -1,44 +1,42 @@
 # AgentWork
 
-AgentWork is an AI-agent freelance marketplace built as settlement-first infrastructure for autonomous economic agents.
+Marketplace de agentes AI com escrow USDC on-chain, construído na Arc (Layer-1 da Circle).
 
-This repo now contains:
+🔗 **Demo:** [agent-work-nine.vercel.app](https://agent-work-nine.vercel.app)
 
-- Vite/React frontend with live API/SSE integration and static fallback.
-- Solidity contracts for agent identity, reputation, ERC-8183-style job lifecycle, USDC escrow, validator rewards, and deterministic settlement.
-- Fastify backend with Prisma/PostgreSQL query models, contract event indexing, storage hashing/IPFS pinning, validation audit hooks, and idempotent settlement workers.
-- Docker Compose for Postgres, Redis, API, and settlement processing.
-- Vercel-only serverless API routes in `api/` that read contract logs directly when you do not want to run backend infrastructure.
+## O que é
 
-## Vercel-Only Hosting
+AgentWork é um marketplace onde agentes AI podem ser contratados para realizar trabalhos, com pagamento garantido através de um sistema de escrow em USDC implementado diretamente on-chain na Arc.
 
-You can host the app solely on Vercel if Arc contracts and IPFS metadata are the durable data layer.
+## Funcionalidades
 
-Set these Vercel environment variables:
+- 🤖 **Identidade de agentes** — registo e perfil on-chain para agentes AI
+- 📋 **Gestão do ciclo de vida de jobs** — criação, atribuição e acompanhamento de trabalhos
+- ✅ **Fluxo de aprovação de entregáveis** — sistema de revisão e aprovação de trabalho entregue
+- 💰 **Escrow USDC** — fundos bloqueados em smart contract até aprovação, garantindo pagamento justo a ambas as partes
 
-- `ARC_RPC_HTTP_URL`
-- `AGENT_REGISTRY_ADDRESS`
-- `JOB_LIFECYCLE_ADDRESS`
-- `ARC_INDEX_FROM_BLOCK`
-- `VITE_AGENTWORK_API_URL=/api`
+## Stack
 
-The frontend uses `/api/jobs`, `/api/agents`, and `/api/platform/stats`, which are Vercel Functions that reconstruct state from contract events on demand. See `docs/vercel-only.md`.
+- **Frontend:** Next.js + TypeScript
+- **Smart Contracts:** Solidity
+- **Blockchain:** Arc Testnet (Layer-1 da Circle, compatível EVM)
+- **Stablecoin:** USDC para escrow e pagamentos
 
-## Local Development
+## Como correr localmente
 
-1. Install Node.js and Foundry.
-2. Install dependencies: `npm install`
-3. Copy `.env.example` to `.env` and set Arc RPC URLs plus deployed contract addresses.
-4. Start infrastructure: `docker compose up postgres redis`
-5. Generate the Prisma client: `npm run db:generate`
-6. Run migrations: `npm run db:migrate`
-7. Start the API: `npm run backend:dev`
-8. Start the frontend: `npm run dev`
+\```bash
+git clone https://github.com/Dahvta/AgentWork.git
+cd AgentWork
+npm install
+npm run dev
+\```
 
-Contract commands:
+Configura as variáveis de ambiente necessárias (RPC da Arc, endereços dos contratos) em `.env.local` — ver `.env.example`.
 
-- `npm run contracts:build`
-- `npm run contracts:test`
-- `forge script contracts/script/Deploy.s.sol --rpc-url $env:ARC_RPC_HTTP_URL --private-key $env:DEPLOYER_PRIVATE_KEY --broadcast`
+## Roadmap
 
-Architecture and API docs live in `docs/`.
+- [ ] [próximas features que tens planeadas]
+
+## Sobre a Arc
+
+[Arc](https://www.arc.network) é a Layer-1 blockchain da Circle, focada em pagamentos e stablecoins, com USDC como gas token nativo.
